@@ -1,0 +1,131 @@
+---
+alwaysApply: false
+---
+
+# Yardli Component Organization Rules
+
+## Component Structure Guidelines
+
+Follow this organized directory structure for all React components:
+
+### Directory Organization
+
+```
+src/components/
+├── layout/           # App structure, shells, providers, navigation
+├── views/            # Page-level components that display data
+├── forms/            # Forms, modals, CRUD operations, form fields
+└── ui/               # Reusable UI components, utilities
+```
+
+### Component Placement Rules
+
+#### `layout/` - Infrastructure Components
+
+- App shells, navigation, headers, sidebars
+- Context providers and global state management
+- Layout wrappers and conditional layouts
+- Theme toggles and global UI controls
+- Examples: `AppShellLayout`, `ConditionalLayout`, `Providers`, `ColorSchemeToggle`
+
+#### `views/` - Display Components
+
+- Page-level components that render data tables/lists
+- Components that primarily consume and display data
+- Components named with "View" suffix
+- Should be presentation-focused, minimal business logic
+- Examples: `CustomersView`, `JobsView`, `DashboardView`, `LoginView`
+
+#### `forms/` - Interactive Components
+
+- Form components and modal dialogs
+- CRUD operation components (Create, Read, Update, Delete)
+- Form field components and input controls
+- Components named with "Client" suffix (legacy) or "Form" suffix
+- Status menus and action components
+- Examples: `CustomersClient`, `JobsForm`, `CustomerSelect`, `StatusMenu`
+
+#### `ui/` - Reusable Components
+
+- Pure UI components without business logic
+- Utility components used across multiple features
+- Third-party integrations (maps, autocomplete, etc.)
+- Design system components
+- Examples: `PlacesAutocomplete`, `LoadingSpinner`, `ConfirmDialog`
+
+### Naming Conventions
+
+- **Views**: Use `[Entity]View.tsx` for display components
+- **Forms**: Use `[Entity]Form.tsx` or `[Entity]Client.tsx` for form components
+- **UI Components**: Use descriptive names like `PlacesAutocomplete.tsx`
+- **Layout**: Use descriptive names like `AppShellLayout.tsx`
+
+### Import Path Guidelines
+
+When importing components, use the organized structure:
+
+```typescript
+// Layout components
+import { AppShellLayout } from "@/components/layout/AppShellLayout";
+import { Providers } from "@/components/layout/Providers";
+
+// View components
+import CustomersView from "@/components/views/CustomersView";
+import JobsView from "@/components/views/JobsView";
+
+// Form components
+import CustomersForm from "@/components/forms/CustomersForm";
+import CustomerSelect from "@/components/forms/CustomerSelect";
+
+// UI components
+import { PlacesAutocomplete } from "@/components/ui/PlacesAutocomplete";
+```
+
+### Component Creation Guidelines
+
+#### When creating new components:
+
+1. **Identify the primary purpose**:
+    - Does it manage app structure/navigation? → `layout/`
+    - Does it display data in tables/lists? → `views/`
+    - Does it handle forms/CRUD operations? → `forms/`
+    - Is it a reusable UI element? → `ui/`
+
+2. **Follow naming patterns**:
+    - Views: `[EntityName]View.tsx`
+    - Forms: `[EntityName]Form.tsx` or `[Action][Entity]Form.tsx`
+    - UI: Use descriptive, reusable names
+
+3. **Keep responsibilities focused**:
+    - Views should primarily display data
+    - Forms should handle user input and mutations
+    - UI components should be reusable and pure
+    - Layout components should manage structure
+
+### File Organization Within Directories
+
+- Keep related components together
+- Use index files for re-exports when appropriate
+- Maintain consistent export patterns (default vs named exports)
+
+### Examples of Proper Component Placement
+
+```typescript
+// ✅ Correct placements
+src / components / layout / AppShellLayout.tsx; // App structure
+src / components / views / ProductsView.tsx; // Data display
+src / components / forms / CreateProductForm.tsx; // Form/CRUD
+src / components / ui / SearchInput.tsx; // Reusable UI
+
+// ❌ Incorrect placements
+src / components / ProductsTable.tsx; // Should be views/ProductsView.tsx
+src / components / ProductForm.tsx; // Should be forms/ProductForm.tsx
+src / components / Navigation.tsx; // Should be layout/Navigation.tsx
+```
+
+This structure promotes:
+
+- **Discoverability**: Easy to find components by purpose
+- **Maintainability**: Related components are co-located
+- **Scalability**: Clear patterns for growth
+- **Developer Experience**: Reduced cognitive load when navigating code

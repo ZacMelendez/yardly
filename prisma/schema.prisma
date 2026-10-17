@@ -1,0 +1,331 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// Better Auth schema: https://better-auth.com/docs/concepts/database
+model User {
+  id            String    @id @default(cuid())
+  name          String?
+  email         String?   @unique
+  emailVerified Boolean   @default(false)
+  image         String?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+  accounts      Account[]
+  sessions      Session[]
+
+  customers     Customer[]
+  estimates     Estimate[]
+  invoices      Invoice[]
+  jobs          Job[]
+  members       Member[]
+  services      Service[]
+  subscriptions Subscription[]
+}
+
+model Account {
+  id                    String    @id @default(cuid())
+  userId                String
+  accountId             String
+  providerId            String
+  accessToken           String?   @db.Text
+  refreshToken          String?   @db.Text
+  accessTokenExpiresAt  DateTime?
+  refreshTokenExpiresAt DateTime?
+  scope                 String?
+  idToken               String?   @db.Text
+  password              String?   @db.Text
+  createdAt             DateTime  @default(now())
+  updatedAt             DateTime  @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([providerId, accountId])
+}
+
+model Session {
+  id                    String   @id @default(cuid())
+  userId                String
+  token                 String   @unique
+  expiresAt             DateTime
+  ipAddress             String?
+  userAgent             String?  @db.Text
+  activeOrganizationId  String?
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
+
+  user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  organization Organization? @relation(fields: [activeOrganizationId], references: [id], onDelete: SetNull)
+}
+
+// Better Auth organization plugin
+model Organization {
+  id              String   @id @default(cuid())
+  name            String
+  slug            String   @unique
+  logo            String?
+  metadata        Json?
+  resendApiKeyId  String?  // Resend API key ID (for deletion)
+  resendApiKey    String?  @db.Text // Resend API key token (used to send as this org)
+  createdAt       DateTime @default(now())
+
+  members      Member[]
+  invitations  Invitation[]
+  sessions     Session[]
+
+  customers  Customer[]
+  services   Service[]
+  estimates  Estimate[]
+  invoices   Invoice[]
+  jobs       Job[]
+}
+
+model Member {
+  id             String   @id @default(cuid())
+  organizationId String
+  userId         String
+  role           String
+  createdAt      DateTime @default(now())
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([organizationId, userId])
+  @@index([userId])
+}
+
+model Invitation {
+  id             String   @id @default(cuid())
+  organizationId String
+  email          String
+  role           String
+  status         String   @default("pending")
+  inviterId      String
+  expiresAt      DateTime
+  createdAt      DateTime @default(now())
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+}
+
+model Verification {
+  id         String   @id @default(cuid())
+  identifier String
+  value      String   @db.Text
+  expiresAt  DateTime
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+}
+
+model Subscription {
+  id                 String    @id @default(cuid())
+  userId             String
+  planId             String // e.g., "basic", "pro", "enterprise"
+  planName           String // Human readable plan name
+  status             String // "active", "cancelled", "expired", "past_due", "trialing"
+  currentPeriodStart DateTime
+  currentPeriodEnd   DateTime
+  cancelAtPeriodEnd  Boolean   @default(false)
+  canceledAt         DateTime?
+  trialStart         DateTime?
+  trialEnd           DateTime?
+
+  // Payment provider fields
+  stripeSubscriptionId String? @unique
+  stripeCustomerId     String?
+  stripePriceId        String?
+
+  // Billing information
+  billingCycle String // "monthly", "yearly"
+  amount       Decimal @db.Decimal(10, 2)
+  currency     String  @default("usd")
+
+  // Feature limits (optional - could also be stored in a separate table)
+  maxCustomers        Int? // null = unlimited
+  maxJobs             Int? // null = unlimited
+  maxInvoicesPerMonth Int? // null = unlimited
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([status])
+  @@index([stripeSubscriptionId])
+}
+
+model Customer {
+  id                String   @id @default(cuid())
+  userId            String
+  organizationId    String
+  name              String
+  email             String?
+  phone             String?
+  address           String?
+  notes             String?
+  stripeCustomerId  String?  // Stripe customer ID for invoicing (payments)
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  estimates    Estimate[]
+  invoices     Invoice[]
+  jobs         Job[]
+
+  @@index([organizationId])
+}
+
+model Service {
+  id             String   @id @default(cuid())
+  userId         String
+  organizationId String
+  name           String
+  description    String?
+  category       String? // e.g., "Cleaning", "Maintenance", "Repair"
+  defaultPrice   Decimal  @db.Decimal(10, 2)
+  unit           String   @default("each") // e.g., "hour", "each", "sq ft"
+  isActive       Boolean  @default(true)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  user          User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  organization  Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  estimateItems EstimateItem[]
+  invoiceItems  InvoiceItem[]
+
+  @@index([userId, isActive])
+  @@index([organizationId])
+  @@index([category])
+}
+
+model EstimateItem {
+  id          String  @id @default(cuid())
+  estimateId  String
+  serviceId   String? // Optional - allows custom items without predefined service
+  description String? // Optional - can be overridden from service description
+  quantity    Int     @default(1)
+  unitPrice   Decimal @db.Decimal(10, 2)
+
+  estimate Estimate @relation(fields: [estimateId], references: [id], onDelete: Cascade)
+  service  Service? @relation(fields: [serviceId], references: [id])
+
+  @@index([serviceId])
+}
+
+model Estimate {
+  id             String         @id @default(cuid())
+  customerId     String
+  userId         String
+  organizationId String
+  title          String
+  status         String         @default("draft")
+  createdAt      DateTime       @default(now())
+  updatedAt      DateTime       @updatedAt
+  items          EstimateItem[]
+
+  customer     Customer     @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  jobs Job[]
+  Pdf  Pdf[]
+
+  @@index([organizationId])
+}
+
+model InvoiceItem {
+  id          String  @id @default(cuid())
+  invoiceId   String
+  serviceId   String? // Optional - allows custom items without predefined service
+  description String? // Optional - can be overridden from service description
+  quantity    Int     @default(1)
+  unitPrice   Decimal @db.Decimal(10, 2)
+
+  invoice Invoice  @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+  service Service? @relation(fields: [serviceId], references: [id])
+
+  @@index([serviceId])
+}
+
+model Invoice {
+  id               String        @id @default(cuid())
+  customerId       String
+  userId           String
+  organizationId   String
+  jobId            String?       // Set when draft created from a completed job
+  status           String        @default("draft") // draft | unpaid | paid
+  dueDate          DateTime?
+  stripeInvoiceId  String?       // Stripe invoice ID when sent for payment
+  createdAt        DateTime      @default(now())
+  updatedAt        DateTime      @updatedAt
+  items            InvoiceItem[]
+  pdfs             Pdf[]
+
+  customer     Customer     @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  job          Job?         @relation(fields: [jobId], references: [id], onDelete: SetNull)
+
+  @@index([organizationId])
+  @@index([jobId])
+}
+
+// Enhanced Job model with recurrence support
+model Job {
+  id             String    @id @default(cuid())
+  customerId     String
+  userId         String
+  organizationId String
+  title          String
+  date           DateTime?
+  status         String    @default("scheduled")
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  // Recurrence fields
+  isRecurring    Boolean   @default(false)
+  recurrenceRule Json? // Store recurrence pattern as JSON
+  recurrenceEnd  DateTime? // When recurrence should stop
+  parentJobId    String? // Reference to the original recurring job
+
+  estimateId String?
+  estimate   Estimate? @relation(fields: [estimateId], references: [id])
+
+  invoices   Invoice[]
+
+  customer     Customer     @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  // Self-referential relation for recurring jobs
+  parentJob Job?  @relation("JobRecurrence", fields: [parentJobId], references: [id])
+  childJobs Job[] @relation("JobRecurrence")
+
+  // Add indexes for better query performance
+  @@index([userId, date])
+  @@index([organizationId])
+  @@index([parentJobId])
+  @@index([isRecurring])
+}
+
+model Pdf {
+  id         String    @id @default(cuid())
+  url        String
+  type       PdfType // "ESTIMATE" | "INVOICE"
+  estimateId String?
+  invoiceId  String?
+  estimate   Estimate? @relation(fields: [estimateId], references: [id])
+  invoice    Invoice?  @relation(fields: [invoiceId], references: [id])
+  createdAt  DateTime  @default(now())
+}
+
+enum PdfType {
+  ESTIMATE
+  INVOICE
+}

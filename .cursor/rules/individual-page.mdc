@@ -1,0 +1,462 @@
+---
+alwaysApply: false
+---
+
+# Individual Detail Page Architecture - Server Components + React Query Pattern
+
+## Overview
+
+Individual detail pages in Yardli use a sophisticated hybrid architecture combining Next.js 15 server components with React Query for optimal performance and user experience. This pattern provides server-side rendering benefits while maintaining rich client-side interactivity.
+
+## Core Architecture Principles
+
+### 1. Server-First with Client Enhancement
+
+- **Server Components**: Primary data fetching and initial rendering
+- **Client Components**: Interactive features, mutations, and real-time updates
+- **Hybrid Pattern**: Server components provide initial data, client components enhance with React Query
+
+### 2. State Management Strategy
+
+- **Jotai Atoms**: Global state management with SSR hydration
+- **React Query**: Client-side data fetching, caching, and synchronization
+- **Initial Data Atoms**: Bridge between server and client state
+
+## Folder Structure Pattern
+
+```
+src/app/{entity}/[id]/
+├── page.tsx                    # Server component - main layout & data fetching
+├── loading.tsx                 # Loading UI for entire page
+└── components/
+    ├── {Entity}Header.tsx      # Client component - navigation & actions
+    ├── {Entity}Info.tsx        # Server component - static entity data
+    ├── {Entity}InfoLoading.tsx # Loading UI for entity info
+    ├── {Entity}Jobs/
+    │   ├── index.tsx          # Server component - data fetching
+    │   └── table.tsx          # Client component - interactive table
+    ├── JobsLoading.tsx        # Loading UI for jobs section
+    ├── {Entity}Estimates/
+    │   ├── index.tsx          # Server component - data fetching
+    │   └── table.tsx          # Client component - interactive table
+    ├── EstimatesLoading.tsx   # Loading UI for estimates section
+    └── Delete{Entity}.tsx     # Client component - destructive actions
+```
+
+## Server Component Pattern (page.tsx)
+
+```typescript
+import React, { Suspense } from "react";
+import { notFound } from "next/navigation";
+import { prisma } from "@/lib/prisma";
+import { Container, Stack, Divider } from "@mantine/core";
+import { HydrationBoundary } from "jotai-ssr";
+import { initialEntityDetailAtom } from "@/lib/atoms";
+
+export default async function Index(props: {
+    params: Promise<{ id: string }>;
+}) {
+    const params = await props.params;
+
+    // Server-side data fetching
+    const entity = await prisma.entity.findUnique({
+        where: { id: params.id },
+    });
+
+    if (!entity) {
+        return notFound();
+    }
+
+    return (
+        <Container size="lg" py="md">
+            <Stack gap="lg">
+                <HydrationBoundary
+                    hydrateAtoms={[[initialEntityDetailAtom, entity]]}
+                >
+                    <EntityHeader entity={entity} />
+
+                    <Suspense fallback={<EntityInfoLoading />}>
+                        <EntityInfo {...entity} />
+                    </Suspense>
+
+                    <Divider />
+
+                    <Suspense fallback={<JobsLoading />}>
+                        <EntityJobs entityId={params.id} />
+                    </Suspense>
+
+                    <Divider />
+
+                    <Suspense fallback={<EstimatesLoading />}>
+                        <EntityEstimates entityId={params.id} />
+                    </Suspense>
+
+                    <DeleteEntity id={params.id} />
+                </HydrationBoundary>
+            </Stack>
+        </Container>
+    );
+}
+```
+
+## Server Component Pattern (Data Fetching)
+
+```typescript
+// Server component - async function, direct Prisma calls
+export async function EntityJobs({ entityId }: { entityId: string }) {
+    const jobs = await prisma.job.findMany({
+        where: { entityId },
+        include: {
+            entity: {
+                select: { id: true, name: true },
+            },
+        },
+        orderBy: { createdAt: "desc" },
+    });
+
+    return <EntityJobsTable jobs={jobs as Job[]} />;
+}
+```
+
+## Client Component Pattern (Interactive Features)
+
+```typescript
+"use client";
+
+export const EntityJobsTable = ({ jobs: initialJobs }: { jobs: Job[] }) => {
+    const entity = useAtomValue(initialEntityDetailAtom);
+    const queryClient = useQueryClient();
+
+    // React Query with initial data from server
+    const { data: jobs } = useQuery({
+        queryKey: ["entity", "jobs", entity.id],
+        queryFn: () => fetchJSON<Job[]>(`/api/jobs/entity/${entity.id}`),
+        enabled: !!entity.id,
+        initialData: initialJobs, // Server data as initial state
+    });
+
+    // Optimistic mutations
+    const deleteJobMutation = useMutation({
+        mutationFn: (id: string) =>
+            fetchJSON<Job>(`/api/jobs/${id}`, { method: "DELETE" }),
+        onMutate: async (jobId) => {
+            // Cancel outgoing refetches
+            await queryClient.cancelQueries({
+                queryKey: ["entity", entity.id],
+            });
+
+            // Snapshot previous value
+            const previousEntity = queryClient.getQueryData([
+                "entity",
+                entity.id,
+            ]);
+
+            // Optimistically update
+            queryClient.setQueryData(["entity", entity.id], (old: any) => {
+                if (!old) return old;
+                return {
+                    ...old,
+                    jobs:
+                        old.jobs?.filter((job: Job) => job.id !== jobId) || [],
+                };
+            });
+
+            return { previousEntity };
+        },
+        onError: (err, jobId, context) => {
+            // Rollback on error
+            if (context?.previousEntity) {
+                queryClient.setQueryData(
+                    ["entity", entity.id],
+                    context.previousEntity
+                );
+            }
+            notifications.show({
+                title: "Error",
+                message: "Failed to delete job",
+                color: "red",
+            });
+        },
+        onSuccess: () => {
+            notifications.show({
+                title: "Success",
+                message: "Job deleted successfully",
+                color: "green",
+            });
+            queryClient.invalidateQueries({ queryKey: ["entity", entity.id] });
+        },
+    });
+
+    return (
+        <Stack gap="md">
+            <Group justify="space-between" align="center">
+                <Title order={4}>Jobs ({jobs.length})</Title>
+                <JobsClient
+                    entityId={entity.id}
+                    refetchQueryKeys={[["entity", "jobs", entity.id]]}
+                />
+            </Group>
+
+            {jobs.length === 0 ? (
+                <Text c="dimmed" ta="center" py="md">
+                    No jobs found for this entity.
+                </Text>
+            ) : (
+                <div
+                    style={{
+                        overflowX: "auto",
+                        WebkitOverflowScrolling: "touch",
+                    }}
+                >
+                    <Table
+                        highlightOnHover
+                        withRowBorders={false}
+                        verticalSpacing="sm"
+                    >
+                        {/* Table content */}
+                    </Table>
+                </div>
+            )}
+        </Stack>
+    );
+};
+```
+
+## Loading States Pattern
+
+### Three-Tier Loading Strategy
+
+1. **Page-Level Loading** (`loading.tsx`)
+
+```typescript
+export default function Loading() {
+    return (
+        <Container size="lg" py="md">
+            <Stack gap="lg">
+                {/* Header skeleton */}
+                <Group justify="space-between" align="center">
+                    <Skeleton height={32} width={200} />
+                    <Skeleton height={36} width={80} />
+                </Group>
+
+                {/* Entity info skeleton */}
+                <Stack gap="md">
+                    <Skeleton height={24} width={150} />
+                    <Stack gap="sm">
+                        <Skeleton height={36} />
+                        <Skeleton height={36} />
+                        <Skeleton height={36} />
+                    </Stack>
+                </Stack>
+
+                <Divider />
+
+                {/* Related data sections skeleton */}
+                {/* ... */}
+            </Stack>
+        </Container>
+    );
+}
+```
+
+2. **Section-Level Loading** (e.g., `JobsLoading.tsx`)
+
+```typescript
+export function JobsLoading() {
+    return (
+        <Stack gap="md">
+            <Group justify="space-between" align="center">
+                <Skeleton height={24} width={100} />
+                <Skeleton height={32} width={80} />
+            </Group>
+            <Stack gap="xs">
+                <Skeleton height={48} />
+                <Skeleton height={48} />
+                <Skeleton height={48} />
+            </Stack>
+        </Stack>
+    );
+}
+```
+
+## Data Flow Architecture
+
+### 1. Initial Page Load (SSR)
+
+```
+Server Component (page.tsx)
+├── Fetches entity data via Prisma
+├── Hydrates Jotai atoms with initial data
+├── Renders server components with data
+└── Suspense boundaries for async sections
+```
+
+### 2. Client-Side Enhancement
+
+```
+Client Components
+├── Receive initial data from server components
+├── Use React Query with initialData
+├── Handle user interactions and mutations
+└── Sync with server via API routes
+```
+
+### 3. State Synchronization
+
+```
+Jotai Atoms (Global State)
+├── initialEntityDetailAtom - Entity data
+├── Hydrated on server, consumed on client
+└── Shared across components
+
+React Query (Data Fetching)
+├── Query keys: ["entity", "jobs", entityId]
+├── Initial data from server components
+├── Background refetching and caching
+└── Optimistic updates for mutations
+```
+
+## Type Safety Patterns
+
+### Shared Types (in /src/lib/atoms.ts)
+
+```typescript
+export type Entity = {
+    id: string;
+    name: string;
+    email?: string | null;
+    phone?: string | null;
+    address?: string | null;
+    notes?: string | null;
+    createdAt: string | Date;
+};
+
+export type Job = {
+    id: string;
+    title: string;
+    date?: string | Date | null;
+    status: string;
+    createdAt: string | Date;
+    entity?: Omit<Entity, "createdAt">;
+    // ... additional fields
+};
+```
+
+### Type Casting for Prisma
+
+```typescript
+// Server components cast Prisma results to client types
+return <EntityJobsTable jobs={jobs as Job[]} />;
+
+// Handle serialization for complex objects
+return (
+    <EntityEstimatesTable
+        estimates={JSON.parse(JSON.stringify(estimates)) as Estimate[]}
+    />
+);
+```
+
+## Query Key Patterns
+
+```typescript
+// Hierarchical query keys for React Query
+["entity", "jobs", entityId][("entity", "estimates", entityId)][
+    ("entity", entityId)
+]; // For entity data
+```
+
+## Component Composition Rules
+
+### When to Use Server Components
+
+- Initial data fetching
+- Static content rendering
+- SEO-critical content
+- Performance-critical data loading
+
+### When to Use Client Components
+
+- User interactions (forms, buttons, modals)
+- Real-time updates
+- Complex state management
+- Browser APIs usage
+
+### File Naming Conventions
+
+- Server components: PascalCase (e.g., `EntityInfo.tsx`)
+- Client components: PascalCase with "use client"
+- Loading components: `[Section]Loading.tsx`
+- Table components: `[Entity]Table.tsx`
+
+## Best Practices
+
+1. **Server-First**: Always start with server components for data fetching
+2. **Hydration**: Use HydrationBoundary to bridge server and client state
+3. **Suspense**: Wrap async server components in Suspense boundaries
+4. **Optimistic Updates**: Implement rollback mechanisms for mutations
+5. **Error Handling**: Graceful fallbacks for server and client errors
+6. **Type Safety**: Consistent typing between server and client
+7. **Performance**: Initial data eliminates loading states
+8. **Caching**: Strategic use of React Query caching with proper keys
+
+## Common Utility Functions
+
+### Date Formatting
+
+```typescript
+function formatDate(dateString?: string | Date | null) {
+    if (!dateString) return "—";
+    return new Date(dateString).toLocaleDateString("en-US", {
+        year: "numeric",
+        month: "short",
+        day: "numeric",
+        hour: "2-digit",
+        minute: "2-digit",
+    });
+}
+```
+
+### Status Colors
+
+```typescript
+function getStatusColor(status: string) {
+    switch (status.toLowerCase()) {
+        case "scheduled":
+            return "blue";
+        case "in_progress":
+            return "yellow";
+        case "completed":
+            return "green";
+        case "cancelled":
+            return "red";
+        default:
+            return "gray";
+    }
+}
+```
+
+### Delete Confirmation
+
+```typescript
+const handleDelete = (id: string) => {
+    modals.openConfirmModal({
+        title: "Delete Entity?",
+        children: (
+            <Text size="sm">
+                Are you sure you want to delete this entity? This action cannot
+                be undone.
+            </Text>
+        ),
+        labels: { confirm: "Delete", cancel: "Cancel" },
+        confirmProps: { color: "red" },
+        onConfirm: () => deleteMutation.mutate(id),
+    });
+};
+```
+
+This architecture provides optimal performance through server-side rendering while maintaining rich client-side interactivity and real-time updates.
+description:
+globs:
+alwaysApply: true
+
+---

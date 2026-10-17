@@ -1,0 +1,240 @@
+---
+alwaysApply: false
+---
+
+# Prisma Decimal Serialization Rules
+
+## Overview
+
+When working with Prisma Decimal fields in Next.js applications, always implement proper serialization to prevent "Decimal objects are not supported" errors when passing data from Server Components to Client Components.
+
+## Required Global Setup
+
+### 1. Prisma Client Configuration (src/lib/prisma.ts)
+
+```typescript
+import { PrismaClient, Prisma } from "@prisma/client";
+
+// Global fix for Decimal serialization in Client Components
+// This ensures all Decimal objects are automatically converted to numbers when serialized
+if (typeof Prisma.Decimal.prototype.toJSON === "undefined") {
+    // @ts-ignore - Override the toJSON method to return number instead of string
+    Prisma.Decimal.prototype.toJSON = function () {
+        return this.toNumber();
+    };
+}
+
+// Extend the Decimal prototype to include our custom toJSON method in types
+declare module "@prisma/client/runtime/library" {
+    interface Decimal {
+        toJSON(): number;
+    }
+}
+
+declare global {
+    var prismaGlobal: PrismaClient | undefined;
+}
+
+export const prisma: PrismaClient = global.prismaGlobal ?? new PrismaClient();
+
+if (process.env.NODE_ENV !== "production") {
+    global.prismaGlobal = prisma;
+}
+```
+
+## Type Definition Rules
+
+### ✅ Client-Side Types (Always Use number)
+
+```typescript
+// In src/lib/atoms.ts or type definition files
+export type EstimateItem = {
+    id: string;
+    description: string;
+    quantity: number;
+    unitPrice: number; // ✅ Use number for client-side
+    estimateId: string;
+};
+
+export type Service = {
+    id: string;
+    name: string;
+    defaultPrice: number; // ✅ Use number for client-side
+    // ... other fields
+};
+```
+
+### ❌ Avoid These Patterns
+
+```typescript
+// ❌ Don't use Decimal in client-side types
+export type EstimateItem = {
+    unitPrice: Decimal; // Will cause serialization errors
+};
+
+// ❌ Don't mix types unnecessarily
+export type Service = {
+    defaultPrice: Decimal | number; // Prefer just number
+};
+```
+
+## Server Component Serialization Rules
+
+### ✅ Always Serialize Before Passing to Client
+
+```typescript
+// In Server Component pages (app/*/page.tsx)
+export default async function EstimatesPage() {
+    const data = await getEstimatesData();
+
+    // ✅ REQUIRED: Serialize before passing to client
+    const serializedData = JSON.parse(JSON.stringify(data));
+
+    return (
+        <HydrationBoundary hydrateAtoms={[[atom, serializedData]]}>
+            <EstimatesView />
+        </HydrationBoundary>
+    );
+}
+```
+
+### ✅ Remove Explicit Return Types for Server Functions
+
+```typescript
+// ✅ Let TypeScript infer the return type
+async function getEstimatesData() {
+    const estimates = await prisma.estimate.findMany({
+        include: { items: true },
+    });
+    return { estimates };
+}
+
+// ❌ Don't force client types on server data
+async function getEstimatesData(): Promise<{ estimates: Estimate[] }> {
+    // This will cause type errors because server returns Decimal
+}
+```
+
+## API Route Serialization Rules
+
+### ✅ Always Serialize API Responses
+
+```typescript
+// In API routes (app/api/*/route.ts)
+export async function GET() {
+    const data = await prisma.model.findMany(/* ... */);
+
+    // ✅ REQUIRED: Serialize before returning
+    const serializedData = JSON.parse(JSON.stringify(data));
+    return NextResponse.json(serializedData);
+}
+
+export async function POST(request: Request) {
+    const newData = await prisma.model.create(/* ... */);
+
+    // ✅ REQUIRED: Serialize before returning
+    const serializedData = JSON.parse(JSON.stringify(newData));
+    return NextResponse.json(serializedData);
+}
+```
+
+## Common Patterns and Templates
+
+### Server Component Template
+
+```typescript
+import { prisma } from "@/lib/prisma";
+import { HydrationBoundary } from "jotai-ssr";
+import { initialDataAtom } from "@/lib/atoms";
+import ClientView from "@/components/views/ClientView";
+
+// ✅ No explicit return type - let TypeScript infer
+async function getData() {
+    const data = await prisma.model.findMany({
+        include: { relatedItems: true },
+    });
+    return { data };
+}
+
+export default async function Page() {
+    const { data } = await getData();
+
+    // ✅ Always serialize before passing to client
+    const serializedData = JSON.parse(JSON.stringify(data));
+
+    return (
+        <HydrationBoundary hydrateAtoms={[[initialDataAtom, serializedData]]}>
+            <ClientView />
+        </HydrationBoundary>
+    );
+}
+```
+
+### API Route Template
+
+```typescript
+import { NextResponse } from "next/server";
+import { prisma } from "@/lib/prisma";
+
+export async function GET() {
+    try {
+        const data = await prisma.model.findMany({
+            include: { itemsWithDecimals: true },
+        });
+
+        // ✅ Always serialize responses with Decimal fields
+        const serializedData = JSON.parse(JSON.stringify(data));
+        return NextResponse.json(serializedData);
+    } catch (error) {
+        return NextResponse.json(
+            { error: "Internal Server Error" },
+            { status: 500 }
+        );
+    }
+}
+```
+
+## Troubleshooting Checklist
+
+When you encounter: "Only plain objects can be passed to Client Components. Decimal objects are not supported."
+
+1. **✅ Verify Global Setup**
+
+    - Check that `src/lib/prisma.ts` has the toJSON override
+    - Ensure the module augmentation is present
+
+2. **✅ Check Type Definitions**
+
+    - Client-side types use `number` not `Decimal`
+    - Remove unused `Decimal` imports from client files
+
+3. **✅ Verify Serialization**
+
+    - Server Components serialize data before passing to client
+    - API routes serialize responses before returning
+    - HydrationBoundary receives serialized data
+
+4. **✅ Remove Problematic Patterns**
+    - Remove explicit return types that include `Decimal`
+    - Don't use `as any` to bypass type checking
+
+## Performance Notes
+
+-   `JSON.parse(JSON.stringify())` is acceptable for most use cases
+-   The toJSON override has minimal performance impact
+-   For very large datasets, consider streaming or pagination
+-   Always profile if performance becomes a concern
+
+## Testing Considerations
+
+```typescript
+// ✅ Test serialization behavior
+test("serializes decimal fields correctly", () => {
+    const mockData = { unitPrice: new Decimal("10.99") };
+    const serialized = JSON.parse(JSON.stringify(mockData));
+    expect(typeof serialized.unitPrice).toBe("number");
+    expect(serialized.unitPrice).toBe(10.99);
+});
+```
+
+This rule set ensures consistent Decimal handling across all Next.js + Prisma projects and prevents common serialization errors.
